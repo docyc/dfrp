@@ -40,6 +40,8 @@ jobs:
             arch: arm64
           - os: windows-latest
             arch: arm
+          - os: macos-latest
+            arch: arm
 
     steps:
       - name: Checkout code
