@@ -18,10 +18,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"text/template"
+	"time"
 
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/samber/lo"
@@ -34,6 +37,12 @@ import (
 	"github.com/fatedier/frp/pkg/config/v1/validation"
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/util/util"
+)
+
+var (
+	// 远程配置重试参数
+	maxRetries    = 3
+	retryInterval = 2 * time.Second
 )
 
 var glbEnvs map[string]string
@@ -60,6 +69,53 @@ func GetValues() *Values {
 	}
 }
 
+// fetchRemoteConfig 从HTTPS地址获取配置内容，带重试机制
+func fetchRemoteConfig(url string) ([]byte, error) {
+	// 仅允许HTTPS协议
+	if !strings.HasPrefix(strings.ToLower(url), "https://") {
+		return nil, fmt.Errorf("only HTTPS protocol is supported for remote configs")
+	}
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	var lastErr error
+	for i := 0; i < maxRetries; i++ {
+		resp, err := client.Get(url)
+		if err != nil {
+			lastErr = fmt.Errorf("request failed: %w", err)
+			if i < maxRetries-1 {
+				time.Sleep(retryInterval)
+			}
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("remote server returned status: %s", resp.Status)
+			if i < maxRetries-1 {
+				time.Sleep(retryInterval)
+			}
+			continue
+		}
+
+		content, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read response: %w", err)
+			if i < maxRetries-1 {
+				time.Sleep(retryInterval)
+			}
+			continue
+		}
+
+		return content, nil
+	}
+
+	return nil, fmt.Errorf("failed after %d retries: %w", maxRetries, lastErr)
+}
+
 func DetectLegacyINIFormat(content []byte) bool {
 	f, err := ini.Load(content)
 	if err != nil {
@@ -72,7 +128,7 @@ func DetectLegacyINIFormat(content []byte) bool {
 }
 
 func DetectLegacyINIFormatFromFile(path string) bool {
-	b, err := os.ReadFile(path)
+	b, err := LoadFileContentWithTemplate(path, GetValues())
 	if err != nil {
 		return false
 	}
@@ -95,8 +151,18 @@ func RenderWithTemplate(in []byte, values *Values) ([]byte, error) {
 	return buffer.Bytes(), nil
 }
 
+// LoadFileContentWithTemplate 加载文件内容（支持本地文件和HTTPS远程URL）
 func LoadFileContentWithTemplate(path string, values *Values) ([]byte, error) {
-	b, err := os.ReadFile(path)
+	var b []byte
+	var err error
+
+	// 区分远程URL和本地文件
+	if strings.HasPrefix(strings.ToLower(path), "https://") {
+		b, err = fetchRemoteConfig(path)
+	} else {
+		b, err = os.ReadFile(path)
+	}
+
 	if err != nil {
 		return nil, err
 	}
@@ -111,64 +177,108 @@ func LoadConfigureFromFile(path string, c any, strict bool) error {
 	return LoadConfigure(content, c, strict)
 }
 
-// parseYAMLWithDotFieldsHandling parses YAML with dot-prefixed fields handling
-// This function handles both cases efficiently: with or without dot fields
-func parseYAMLWithDotFieldsHandling(content []byte, target any) error {
-	var temp any
-	if err := yaml.Unmarshal(content, &temp); err != nil {
-		return err
+// DetectConfigFormat 仅通过内容检测配置文件格式（不依赖后缀）
+func DetectConfigFormat(content []byte) string {
+	// 清洗内容：去除前导空白字符，用于格式判断
+	trimmed := bytes.TrimSpace(content)
+	if len(trimmed) == 0 {
+		return "unknown"
 	}
 
-	// Remove dot fields if it's a map
-	if tempMap, ok := temp.(map[string]any); ok {
-		for key := range tempMap {
-			if strings.HasPrefix(key, ".") {
-				delete(tempMap, key)
-			}
+	// JSON特征：以{开头，以}结尾
+	if (trimmed[0] == '{' && trimmed[len(trimmed)-1] == '}') ||
+		(trimmed[0] == '[' && trimmed[len(trimmed)-1] == ']') {
+		var jsonTest interface{}
+		if err := json.Unmarshal(trimmed, &jsonTest); err == nil {
+			return "json"
 		}
 	}
 
-	// Convert to JSON and decode with strict validation
-	jsonBytes, err := json.Marshal(temp)
-	if err != nil {
-		return err
+	// INI特征：包含[section]格式的行
+	lines := bytes.Split(trimmed, []byte("\n"))
+	for _, line := range lines {
+		l := bytes.TrimSpace(line)
+		if len(l) >= 2 && l[0] == '[' && l[len(l)-1] == ']' {
+			if _, err := ini.Load(content); err == nil {
+				return "ini"
+			}
+			break
+		}
 	}
-	decoder := json.NewDecoder(bytes.NewReader(jsonBytes))
-	decoder.DisallowUnknownFields()
-	return decoder.Decode(target)
+
+	// TOML特征：尝试解析为TOML（最后检测，因为TOML格式更灵活）
+	var tomlTest interface{}
+	if err := toml.Unmarshal(trimmed, &tomlTest); err == nil {
+		return "toml"
+	}
+
+	return "unknown"
 }
 
-// LoadConfigure loads configuration from bytes and unmarshal into c.
-// Now it supports json, yaml and toml format.
+// iniToMap 将INI结构转换为Map
+func iniToMap(f *ini.File) map[string]interface{} {
+	result := make(map[string]interface{})
+	for _, section := range f.Sections() {
+		sectionMap := make(map[string]interface{})
+		for _, key := range section.Keys() {
+			sectionMap[key.Name()] = key.Value()
+		}
+		result[section.Name()] = sectionMap
+	}
+	return result
+}
+
+// LoadConfigure 加载配置内容并反序列化（支持多格式）
 func LoadConfigure(b []byte, c any, strict bool) error {
+	format := DetectConfigFormat(b)
+	if format == "unknown" {
+		return fmt.Errorf("unsupported config format. Could not detect from content")
+	}
+
 	v1.DisallowUnknownFieldsMu.Lock()
 	defer v1.DisallowUnknownFieldsMu.Unlock()
 	v1.DisallowUnknownFields = strict
 
-	var tomlObj any
-	// Try to unmarshal as TOML first; swallow errors from that (assume it's not valid TOML).
-	if err := toml.Unmarshal(b, &tomlObj); err == nil {
-		b, err = json.Marshal(&tomlObj)
+	switch format {
+	case "toml":
+		var tomlObj any
+		if err := toml.Unmarshal(b, &tomlObj); err != nil {
+			return err
+		}
+		jsonBytes, err := json.Marshal(&tomlObj)
 		if err != nil {
 			return err
 		}
-	}
-	// If the buffer smells like JSON (first non-whitespace character is '{'), unmarshal as JSON directly.
-	if yaml.IsJSONBuffer(b) {
+		decoder := json.NewDecoder(bytes.NewReader(jsonBytes))
+		if strict {
+			decoder.DisallowUnknownFields()
+		}
+		return decoder.Decode(c)
+
+	case "json":
 		decoder := json.NewDecoder(bytes.NewBuffer(b))
+		if strict {
+			decoder.DisallowUnknownFields()
+		}
+		return decoder.Decode(c)
+
+	case "ini":
+		f, err := ini.Load(b)
+		if err != nil {
+			return err
+		}
+		jsonData, err := json.Marshal(iniToMap(f))
+		if err != nil {
+			return err
+		}
+		decoder := json.NewDecoder(bytes.NewBuffer(jsonData))
 		if strict {
 			decoder.DisallowUnknownFields()
 		}
 		return decoder.Decode(c)
 	}
 
-	// Handle YAML content
-	if strict {
-		// In strict mode, always use our custom handler to support YAML merge
-		return parseYAMLWithDotFieldsHandling(b, c)
-	}
-	// Non-strict mode, parse normally
-	return yaml.Unmarshal(b, c)
+	return fmt.Errorf("unsupported config format: %s", format)
 }
 
 func NewProxyConfigurerFromMsg(m *msg.NewProxy, serverCfg *v1.ServerConfig) (v1.ProxyConfigurer, error) {
@@ -316,7 +426,6 @@ func LoadAdditionalClientConfigs(paths []string, isLegacyFormat bool, strict boo
 			}
 			absFile := filepath.Join(absDir, fi.Name())
 			if matched, _ := filepath.Match(filepath.Join(absDir, filepath.Base(path)), absFile); matched {
-				// support yaml/json/toml
 				cfg := v1.ClientConfig{}
 				if err := LoadConfigureFromFile(absFile, &cfg, strict); err != nil {
 					return nil, nil, fmt.Errorf("load additional config from %s error: %v", absFile, err)
@@ -331,4 +440,13 @@ func LoadAdditionalClientConfigs(paths []string, isLegacyFormat bool, strict boo
 		}
 	}
 	return proxyCfgs, visitorCfgs, nil
+}
+
+// 模板函数实现
+func parseNumberRange(s string) ([]int, error) {
+	return util.ParseNumberRange(s)
+}
+
+func parseNumberRangePair(s string) ([][2]int, error) {
+	return util.ParseNumberRangePair(s)
 }
