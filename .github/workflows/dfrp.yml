@@ -74,7 +74,7 @@ jobs:
         shell: bash
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         if: matrix.arch == 'arm' || matrix.arch != 'arm'
         with:
           name: frpc-${{ matrix.goos }}-${{ matrix.arch == 'arm' && 'armv7' || matrix.arch }}.tar.gz
@@ -86,7 +86,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         
       - name: List downloaded files
         run: ls -R
