@@ -11,9 +11,8 @@ on:
         required: true
         type: string
 
-# 增加一个tags变量
 env:
-  release_tag: ${{ github.event.inputs.release_tag }}
+  release_tag: ${{ github.event.inputs.release_tag || github.ref_name }}
 
 jobs:
   build:
@@ -55,32 +54,40 @@ jobs:
       - name: Get dependencies
         run: go mod tidy
 
+      - name: Set output filename
+        shell: bash
+        run: |
+          if [ "${{ matrix.arch }}" = "arm" ]; then
+            echo "OUTPUT_NAME=frpc-${{ matrix.goos }}-armv7" >> $GITHUB_ENV
+          else
+            echo "OUTPUT_NAME=frpc-${{ matrix.goos }}-${{ matrix.arch }}" >> $GITHUB_ENV
+          fi
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            echo "EXT=.exe" >> $GITHUB_ENV
+          else
+            echo "EXT=" >> $GITHUB_ENV
+          fi
+
       - name: Build frpc
         run: |
           if [ "${{ matrix.arch }}" = "arm" ]; then
-            GOOS=${{ matrix.goos }} GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -o ./bin/frpc-${{ matrix.goos }}-armv7${{ matrix.goos == 'windows' && '.exe' || '' }} ./cmd/frpc/main.go
+            GOOS=${{ matrix.goos }} GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -o ./bin/${{ env.OUTPUT_NAME }}${{ env.EXT }} ./cmd/frpc/main.go
           else
-            GOOS=${{ matrix.goos }} GOARCH=${{ matrix.arch }} CGO_ENABLED=0 go build -o ./bin/frpc-${{ matrix.goos }}-${{ matrix.arch }}${{ matrix.goos == 'windows' && '.exe' || '' }} ./cmd/frpc/main.go
+            GOOS=${{ matrix.goos }} GOARCH=${{ matrix.arch }} CGO_ENABLED=0 go build -o ./bin/${{ env.OUTPUT_NAME }}${{ env.EXT }} ./cmd/frpc/main.go
           fi
         shell: bash
 
       - name: Create tar.gz archive
         run: |
-          if [ "${{ matrix.arch }}" = "arm" ]; then
-            cd ./bin
-            tar -czf ../frpc-${{ matrix.goos }}-armv7.tar.gz frpc-${{ matrix.goos }}-armv7${{ matrix.goos == 'windows' && '.exe' || '' }}
-          else
-            cd ./bin
-            tar -czf ../frpc-${{ matrix.goos }}-${{ matrix.arch }}.tar.gz frpc-${{ matrix.goos }}-${{ matrix.arch }}${{ matrix.goos == 'windows' && '.exe' || '' }}
-          fi
+          cd ./bin
+          tar -czf ../${{ env.OUTPUT_NAME }}.tar.gz ${{ env.OUTPUT_NAME }}${{ env.EXT }}
         shell: bash
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
-        if: matrix.arch == 'arm' || matrix.arch != 'arm'
         with:
-          name: frpc-${{ matrix.goos }}-${{ matrix.arch == 'arm' && 'armv7' || matrix.arch }}.tar.gz
-          path: ./frpc-${{ matrix.goos }}-${{ matrix.arch == 'arm' && 'armv7' || matrix.arch }}.tar.gz
+          name: ${{ env.OUTPUT_NAME }}.tar.gz
+          path: ./${{ env.OUTPUT_NAME }}.tar.gz
 
   deploy:
     name: Deploy all binaries to server
@@ -89,10 +96,10 @@ jobs:
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
-        
+
       - name: List downloaded files
-        run: ls -R
-        
+        run: ls -Rl
+
       - name: Setup SSH and SCP
         uses: appleboy/ssh-action@v1.0.0
         with:
@@ -100,13 +107,7 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
           username: ${{ secrets.SSH_USERNAME }}
           password: ${{ secrets.SSH_PASSWORD }}
-          # 或者使用 key: ${{ secrets.SSH_KEY }}
           script: |
             mkdir -p /home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}
           scp: |
-            frpc-linux-amd64.tar.gz:/home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}/
-            frpc-linux-arm64.tar.gz:/home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}/
-            frpc-linux-armv7.tar.gz:/home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}/
-            frpc-windows-amd64.tar.gz:/home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}/
-            frpc-darwin-amd64.tar.gz:/home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}/
-            frpc-darwin-arm64.tar.gz:/home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}/
+            */*.tar.gz:/home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}/
