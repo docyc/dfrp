@@ -1,0 +1,108 @@
+name: Build and Release frpc
+
+on:
+  push:
+    tags:
+      - 'dv*.*.*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag (e.g., dv1.0.0)'
+        required: true
+        type: string
+
+# 增加一个tags变量
+env:
+  release_tag: ${{ github.event.inputs.release_tag }}
+
+jobs:
+  build:
+    name: Build frpc binaries
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        arch: [amd64, arm64, arm]
+        include:
+          - os: ubuntu-latest
+            goos: linux
+          - os: windows-latest
+            goos: windows
+          - os: macos-latest
+            goos: darwin
+          # 添加 ARMv7 支持 (GOARCH=arm GOARM=7)
+          - os: ubuntu-latest
+            goos: linux
+            arch: arm
+            goarm: 7
+        exclude:
+          - os: windows-latest
+            arch: arm64
+          - os: windows-latest
+            arch: arm
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.24'
+
+      - name: Get dependencies
+        run: go mod tidy
+
+      - name: Build frpc
+        run: |
+          if [ "${{ matrix.arch }}" = "arm" ]; then
+            GOOS=${{ matrix.goos }} GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -o ./bin/frpc-${{ matrix.goos }}-armv7${{ matrix.goos == 'windows' && '.exe' || '' }} ./cmd/frpc/main.go
+          else
+            GOOS=${{ matrix.goos }} GOARCH=${{ matrix.arch }} CGO_ENABLED=0 go build -o ./bin/frpc-${{ matrix.goos }}-${{ matrix.arch }}${{ matrix.goos == 'windows' && '.exe' || '' }} ./cmd/frpc/main.go
+          fi
+        shell: bash
+
+      - name: Create tar.gz archive
+        run: |
+          if [ "${{ matrix.arch }}" = "arm" ]; then
+            cd ./bin
+            tar -czf ../frpc-${{ matrix.goos }}-armv7.tar.gz frpc-${{ matrix.goos }}-armv7${{ matrix.goos == 'windows' && '.exe' || '' }}
+          else
+            cd ./bin
+            tar -czf ../frpc-${{ matrix.goos }}-${{ matrix.arch }}.tar.gz frpc-${{ matrix.goos }}-${{ matrix.arch }}${{ matrix.goos == 'windows' && '.exe' || '' }}
+          fi
+        shell: bash
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        if: matrix.arch == 'arm' || matrix.arch != 'arm'
+        with:
+          name: frpc-${{ matrix.goos }}-${{ matrix.arch == 'arm' && 'armv7' || matrix.arch }}.tar.gz
+          path: ./frpc-${{ matrix.goos }}-${{ matrix.arch == 'arm' && 'armv7' || matrix.arch }}.tar.gz
+
+  deploy:
+    name: Deploy all binaries to server
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        
+      - name: List downloaded files
+        run: ls -R
+        
+      - name: Setup SSH and SCP
+        uses: cross-the-world/ssh-scp@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          port: ${{ secrets.SSH_PORT }}
+          user: ${{ secrets.SSH_USERNAME }}
+          pass: ${{ secrets.SSH_PASSWORD }}
+          # key: ${{ secrets.SSH_KEY }}
+          scp: |
+            frpc-linux-amd64.tar.gz => /home/${{ secrets.SSH_USERNAME }}/frp/${release_tag}/
+            frpc-linux-arm64.tar.gz => /home/${{ secrets.SSH_USERNAME }}/frp/${release_tag}/
+            frpc-linux-armv7.tar.gz => /home/${{ secrets.SSH_USERNAME }}/frp/${release_tag}/
+            frpc-windows-amd64.tar.gz => /home/${{ secrets.SSH_USERNAME }}/frp/${release_tag}/
+            frpc-darwin-amd64.tar.gz => /home/${{ secrets.SSH_USERNAME }}/frp/${release_tag}/
+            frpc-darwin-arm64.tar.gz => /home/${{ secrets.SSH_USERNAME }}/frp/${release_tag}/
