@@ -109,5 +109,14 @@ jobs:
           password: ${{ secrets.SSH_PASSWORD }}
           script: |
             mkdir -p /home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}
-          scp: |
-            */*.tar.gz:/home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}/
+
+      - name: Deploy files via SCP
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          port: ${{ secrets.SSH_PORT }}
+          username: ${{ secrets.SSH_USERNAME }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          source: "./deploy/${{ env.release_tag }}/*.tar.gz"
+          target: "/home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}/"
+          strip_components: 2
