@@ -30,13 +30,13 @@ import (
 	"github.com/samber/lo"
 	"gopkg.in/ini.v1"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/apimachinery/pkg/util/yaml"
 
 	"github.com/fatedier/frp/pkg/config/legacy"
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/config/v1/validation"
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/util/util"
+	// "github.com/fatedier/frp/pkg/util"
 )
 
 var (
@@ -110,6 +110,10 @@ func fetchRemoteConfig(url string) ([]byte, error) {
 			continue
 		}
 
+		// 输出配置内容--docyc
+		// fmt.Println("[INFO] remote config content:")
+		// fmt.Println(string(content))
+
 		return content, nil
 	}
 
@@ -157,7 +161,7 @@ func LoadFileContentWithTemplate(path string, values *Values) ([]byte, error) {
 	var err error
 
 	// 区分远程URL和本地文件
-	if strings.HasPrefix(strings.ToLower(path), "https://") {
+	if strings.HasPrefix(strings.ToLower(path), "http://") || strings.HasPrefix(strings.ToLower(path), "https://") {
 		b, err = fetchRemoteConfig(path)
 	} else {
 		b, err = os.ReadFile(path)
@@ -184,7 +188,6 @@ func DetectConfigFormat(content []byte) string {
 	if len(trimmed) == 0 {
 		return "unknown"
 	}
-
 	// JSON特征：以{开头，以}结尾
 	if (trimmed[0] == '{' && trimmed[len(trimmed)-1] == '}') ||
 		(trimmed[0] == '[' && trimmed[len(trimmed)-1] == ']') {
@@ -194,17 +197,33 @@ func DetectConfigFormat(content []byte) string {
 		}
 	}
 
+	fmt.Println("AA")
+
 	// INI特征：包含[section]格式的行
 	lines := bytes.Split(trimmed, []byte("\n"))
-	for _, line := range lines {
-		l := bytes.TrimSpace(line)
-		if len(l) >= 2 && l[0] == '[' && l[len(l)-1] == ']' {
-			if _, err := ini.Load(content); err == nil {
-				return "ini"
-			}
-			break
+	// fmt.Print(lines[0][0])
+	if bytes.Contains(lines[0], []byte("[")) && bytes.Contains(lines[0], []byte("]")) {
+		if _, err := ini.Load(content); err == nil {
+			fmt.Println("AA-INI")
+			return "ini"
 		}
 	}
+
+	// if trimmed[0] == '[' && trimmed[len(trimmed)-1] != ']' {
+	// 	if _, err := ini.Load(content); err == nil {
+	// 		return "ini"
+	// 	}
+	// }
+
+	// for _, line := range lines {
+	// 	l := bytes.TrimSpace(line)
+	// 	if len(l) >= 2 && l[0] == '[' && l[len(l)-1] == ']' {
+	// 		if _, err := ini.Load(content); err == nil {
+	// 			return "ini"
+	// 		}
+	// 		break
+	// 	}
+	// }
 
 	// TOML特征：尝试解析为TOML（最后检测，因为TOML格式更灵活）
 	var tomlTest interface{}
@@ -440,13 +459,4 @@ func LoadAdditionalClientConfigs(paths []string, isLegacyFormat bool, strict boo
 		}
 	}
 	return proxyCfgs, visitorCfgs, nil
-}
-
-// 模板函数实现
-func parseNumberRange(s string) ([]int, error) {
-	return util.ParseNumberRange(s)
-}
-
-func parseNumberRangePair(s string) ([][2]int, error) {
-	return util.ParseNumberRangePair(s)
 }
