@@ -94,17 +94,19 @@ jobs:
         run: ls -R
         
       - name: Setup SSH and SCP
-        uses: cross-the-world/ssh-scp@v1.2.0
+        uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.SSH_HOST }}
           port: ${{ secrets.SSH_PORT }}
-          user: ${{ secrets.SSH_USERNAME }}
-          pass: ${{ secrets.SSH_PASSWORD }}
-          # key: ${{ secrets.SSH_KEY }}
+          username: ${{ secrets.SSH_USERNAME }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          # 或者使用 key: ${{ secrets.SSH_KEY }}
+          script: |
+            mkdir -p /home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}
           scp: |
-            frpc-linux-amd64.tar.gz => /home/${{ secrets.SSH_USERNAME }}/frp/${release_tag}/
-            frpc-linux-arm64.tar.gz => /home/${{ secrets.SSH_USERNAME }}/frp/${release_tag}/
-            frpc-linux-armv7.tar.gz => /home/${{ secrets.SSH_USERNAME }}/frp/${release_tag}/
-            frpc-windows-amd64.tar.gz => /home/${{ secrets.SSH_USERNAME }}/frp/${release_tag}/
-            frpc-darwin-amd64.tar.gz => /home/${{ secrets.SSH_USERNAME }}/frp/${release_tag}/
-            frpc-darwin-arm64.tar.gz => /home/${{ secrets.SSH_USERNAME }}/frp/${release_tag}/
+            frpc-linux-amd64.tar.gz:/home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}/
+            frpc-linux-arm64.tar.gz:/home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}/
+            frpc-linux-armv7.tar.gz:/home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}/
+            frpc-windows-amd64.tar.gz:/home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}/
+            frpc-darwin-amd64.tar.gz:/home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}/
+            frpc-darwin-arm64.tar.gz:/home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}/
