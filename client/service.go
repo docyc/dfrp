@@ -29,6 +29,7 @@ import (
 
 	"github.com/fatedier/frp/client/proxy"
 	"github.com/fatedier/frp/pkg/auth"
+	"github.com/fatedier/frp/pkg/config"
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/msg"
 	httppkg "github.com/fatedier/frp/pkg/util/http"
@@ -134,6 +135,9 @@ type Service struct {
 
 	connectorCreator func(context.Context, *v1.ClientCommonConfig) Connector
 	handleWorkConnCb func(*v1.ProxyBaseConfig, net.Conn, *msg.StartWorkConn) bool
+
+	// 用于取消远程配置监控
+	watchCancel context.CancelFunc
 }
 
 func NewService(options ServiceOptions) (*Service, error) {
@@ -206,6 +210,15 @@ func (svr *Service) Run(ctx context.Context) error {
 				log.Warnf("admin server exit with error: %v", err)
 			}
 		}()
+	}
+
+	// 启动远程配置监控
+	if svr.configFilePath != "" {
+		watchCtx, watchCancel := context.WithCancel(ctx)
+		svr.watchCancel = watchCancel
+		config.WatchRemoteConfig(watchCtx, svr.configFilePath, func() error {
+			return svr.ReloadConfig()
+		})
 	}
 
 	// first login to frps
@@ -393,6 +406,20 @@ func (svr *Service) UpdateAllConfigurer(proxyCfgs []v1.ProxyConfigurer, visitorC
 	return nil
 }
 
+// ReloadConfig 重新加载配置文件
+func (svr *Service) ReloadConfig() error {
+	if svr.configFilePath == "" {
+		return fmt.Errorf("no config file path specified")
+	}
+
+	_, proxyCfgs, visitorCfgs, _, err := config.LoadClientConfig(svr.configFilePath, true)
+	if err != nil {
+		return err
+	}
+
+	return svr.UpdateAllConfigurer(proxyCfgs, visitorCfgs)
+}
+
 func (svr *Service) Close() {
 	svr.GracefulClose(time.Duration(0))
 }
@@ -403,6 +430,11 @@ func (svr *Service) GracefulClose(d time.Duration) {
 }
 
 func (svr *Service) stop() {
+	// 取消远程配置监控
+	if svr.watchCancel != nil {
+		svr.watchCancel()
+	}
+
 	svr.ctlMu.Lock()
 	defer svr.ctlMu.Unlock()
 	if svr.ctl != nil {
