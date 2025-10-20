@@ -16,6 +16,8 @@ package config
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,16 +38,19 @@ import (
 	"github.com/fatedier/frp/pkg/config/v1/validation"
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/util/util"
-	// "github.com/fatedier/frp/pkg/util"
 )
 
 var (
 	// 远程配置重试参数
 	maxRetries    = 3
 	retryInterval = 2 * time.Second
+
+	// 远程配置监控参数
+	remoteConfigWatchInterval = 10 * time.Second
 )
 
 var glbEnvs map[string]string
+var lastConfigChecksum string
 
 func init() {
 	glbEnvs = make(map[string]string)
@@ -72,10 +77,16 @@ func GetValues() *Values {
 // fetchRemoteConfig 从HTTPS地址获取配置内容，带重试机制
 func fetchRemoteConfig(url string) ([]byte, error) {
 	// 处理@开头路径
-	if strings.HasPrefix(url, "@") {
+	if strings.HasPrefix(url, "dfrp://") || strings.HasPrefix(url, "@") {
 		// 处理以@开头的特殊路径逻辑
 		// 移除@前缀
-		actualPath := strings.TrimPrefix(url, "@")
+		var actualPath string
+		if strings.HasPrefix(url, "@") {
+			actualPath = strings.TrimPrefix(url, "@")
+		} else if strings.HasPrefix(url, "dfrp://") {
+			actualPath = strings.TrimPrefix(url, "dfrp://")
+		}
+
 		if strings.HasPrefix(actualPath, "/") {
 			actualPath = strings.TrimPrefix(actualPath, "/")
 		}
@@ -84,9 +95,9 @@ func fetchRemoteConfig(url string) ([]byte, error) {
 			return nil, fmt.Errorf("invalid path format: %s", url)
 		}
 
-		// 获取环境变量DYRP_URL
+		// 获取环境变量DFRP_URL
 		var dfrp_url string = os.Getenv("DFRP_URL")
-		// 处理DYRP_URL环境变量
+		// 处理DFRP_URL环境变量
 		if dfrp_url != "" {
 			// 判断dfrp_url是否以/结尾
 			if !strings.HasSuffix(dfrp_url, "/") {
@@ -190,7 +201,8 @@ func LoadFileContentWithTemplate(path string, values *Values) ([]byte, error) {
 	// 区分远程URL和本地文件
 	if strings.HasPrefix(strings.ToLower(path), "http://") ||
 		strings.HasPrefix(strings.ToLower(path), "https://") ||
-		strings.HasPrefix(path, "@") {
+		strings.HasPrefix(path, "@") ||
+		strings.HasPrefix(path, "dfrp://") {
 		b, err = fetchRemoteConfig(path)
 	} else {
 		b, err = os.ReadFile(path)
@@ -226,33 +238,13 @@ func DetectConfigFormat(content []byte) string {
 		}
 	}
 
-	fmt.Println("AA")
-
 	// INI特征：包含[section]格式的行
 	lines := bytes.Split(trimmed, []byte("\n"))
-	// fmt.Print(lines[0][0])
 	if bytes.Contains(lines[0], []byte("[")) && bytes.Contains(lines[0], []byte("]")) {
 		if _, err := ini.Load(content); err == nil {
-			fmt.Println("AA-INI")
 			return "ini"
 		}
 	}
-
-	// if trimmed[0] == '[' && trimmed[len(trimmed)-1] != ']' {
-	// 	if _, err := ini.Load(content); err == nil {
-	// 		return "ini"
-	// 	}
-	// }
-
-	// for _, line := range lines {
-	// 	l := bytes.TrimSpace(line)
-	// 	if len(l) >= 2 && l[0] == '[' && l[len(l)-1] == ']' {
-	// 		if _, err := ini.Load(content); err == nil {
-	// 			return "ini"
-	// 		}
-	// 		break
-	// 	}
-	// }
 
 	// TOML特征：尝试解析为TOML（最后检测，因为TOML格式更灵活）
 	var tomlTest interface{}
@@ -488,4 +480,56 @@ func LoadAdditionalClientConfigs(paths []string, isLegacyFormat bool, strict boo
 		}
 	}
 	return proxyCfgs, visitorCfgs, nil
+}
+
+// WatchRemoteConfig 启动一个协程定期检查远程配置变更
+func WatchRemoteConfig(ctx context.Context, path string, reloadFunc func() error) {
+	// 只对远程配置(HTTPS或@开头)启用监控
+	if !(strings.HasPrefix(strings.ToLower(path), "https://") || strings.HasPrefix(path, "@") || strings.HasPrefix(path, "dfrp://")) {
+		return
+	}
+
+	ticker := time.NewTicker(remoteConfigWatchInterval)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				checkAndReloadConfig(path, reloadFunc)
+			}
+		}
+	}()
+}
+
+// checkAndReloadConfig 检查配置变更并在必要时重新加载
+func checkAndReloadConfig(path string, reloadFunc func() error) {
+	// 获取当前配置内容
+	content, err := LoadFileContentWithTemplate(path, GetValues())
+	if err != nil {
+		fmt.Printf("[ERROR] Failed to fetch remote config for watching: %v\n", err)
+		return
+	}
+
+	// 计算当前配置摘要
+	currentChecksum := fmt.Sprintf("%x", sha256.Sum256(content))
+
+	// 如果是首次检查，仅保存摘要
+	if lastConfigChecksum == "" {
+		lastConfigChecksum = currentChecksum
+		return
+	}
+
+	// 比较摘要，如有变更则重新加载
+	if currentChecksum != lastConfigChecksum {
+		fmt.Println("[INFO] Remote config changed, reloading...")
+		if err := reloadFunc(); err != nil {
+			fmt.Printf("[ERROR] Failed to reload config: %v\n", err)
+		} else {
+			// 更新摘要
+			lastConfigChecksum = currentChecksum
+			fmt.Println("[INFO] Config reloaded successfully")
+		}
+	}
 }
