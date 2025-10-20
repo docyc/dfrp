@@ -71,6 +71,33 @@ func GetValues() *Values {
 
 // fetchRemoteConfig 从HTTPS地址获取配置内容，带重试机制
 func fetchRemoteConfig(url string) ([]byte, error) {
+	// 处理@开头路径
+	if strings.HasPrefix(url, "@") {
+		// 处理以@开头的特殊路径逻辑
+		// 移除@前缀
+		actualPath := strings.TrimPrefix(url, "@")
+		if strings.HasPrefix(actualPath, "/") {
+			actualPath = strings.TrimPrefix(actualPath, "/")
+		}
+
+		if actualPath == "" {
+			return nil, fmt.Errorf("invalid path format: %s", url)
+		}
+
+		// 获取环境变量DYRP_URL
+		var dfrp_url string = os.Getenv("DFRP_URL")
+		// 处理DYRP_URL环境变量
+		if dfrp_url != "" {
+			// 判断dfrp_url是否以/结尾
+			if !strings.HasSuffix(dfrp_url, "/") {
+				dfrp_url += "/"
+			}
+			url = dfrp_url + actualPath
+		} else {
+			url = "https://file.im62.cn:5443/dfrp/" + actualPath
+		}
+
+	}
 	// 仅允许HTTPS协议
 	if !strings.HasPrefix(strings.ToLower(url), "https://") {
 		return nil, fmt.Errorf("only HTTPS protocol is supported for remote configs")
@@ -161,7 +188,9 @@ func LoadFileContentWithTemplate(path string, values *Values) ([]byte, error) {
 	var err error
 
 	// 区分远程URL和本地文件
-	if strings.HasPrefix(strings.ToLower(path), "http://") || strings.HasPrefix(strings.ToLower(path), "https://") {
+	if strings.HasPrefix(strings.ToLower(path), "http://") ||
+		strings.HasPrefix(strings.ToLower(path), "https://") ||
+		strings.HasPrefix(path, "@") {
 		b, err = fetchRemoteConfig(path)
 	} else {
 		b, err = os.ReadFile(path)
