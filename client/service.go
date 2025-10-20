@@ -325,7 +325,7 @@ func (svr *Service) loopLoginUntilSuccess(maxInterval time.Duration, firstLoginE
 		xl.Infof("try to connect to server...")
 		conn, connector, err := svr.login()
 		if err != nil {
-			xl.Warnf("connect to server error: %v", err)
+			// xl.Warnf("connect to server error: %v", err)
 			if firstLoginExit {
 				svr.cancel(cancelErr{Err: err})
 			}
