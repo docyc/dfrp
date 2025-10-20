@@ -89,34 +89,34 @@ jobs:
           name: ${{ env.OUTPUT_NAME }}.tar.gz
           path: ./${{ env.OUTPUT_NAME }}.tar.gz
 
-  deploy:
-    name: Deploy all binaries to server
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+  # deploy:
+  #   name: Deploy all binaries to server
+  #   needs: build
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Download all artifacts
+  #       uses: actions/download-artifact@v4
 
-      - name: List downloaded files
-        run: ls -Rl
+  #     - name: List downloaded files
+  #       run: ls -Rl
 
-      - name: Setup SSH and SCP
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          port: ${{ secrets.SSH_PORT }}
-          username: ${{ secrets.SSH_USERNAME }}
-          password: ${{ secrets.SSH_PASSWORD }}
-          script: |
-            mkdir -p /home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}
+  #     - name: Setup SSH and SCP
+  #       uses: appleboy/ssh-action@v1.0.0
+  #       with:
+  #         host: ${{ secrets.SSH_HOST }}
+  #         port: ${{ secrets.SSH_PORT }}
+  #         username: ${{ secrets.SSH_USERNAME }}
+  #         password: ${{ secrets.SSH_PASSWORD }}
+  #         script: |
+  #           mkdir -p /home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}
 
-      - name: Deploy files via SCP
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          port: ${{ secrets.SSH_PORT }}
-          username: ${{ secrets.SSH_USERNAME }}
-          password: ${{ secrets.SSH_PASSWORD }}
-          source: "./deploy/${{ env.release_tag }}/*.tar.gz"
-          target: "/home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}/"
-          strip_components: 2
+  #     - name: Deploy files via SCP
+  #       uses: appleboy/scp-action@v0.1.7
+  #       with:
+  #         host: ${{ secrets.SSH_HOST }}
+  #         port: ${{ secrets.SSH_PORT }}
+  #         username: ${{ secrets.SSH_USERNAME }}
+  #         password: ${{ secrets.SSH_PASSWORD }}
+  #         source: "./deploy/${{ env.release_tag }}/*.tar.gz"
+  #         target: "/home/${{ secrets.SSH_USERNAME }}/frp/${{ env.release_tag }}/"
+  #         strip_components: 2
